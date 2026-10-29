@@ -137,14 +137,33 @@ enrich='
     | round;
   ($inst|map(nrm)) as $instn
   | map(. + { match: matchpct(.name; .summary),
-              installed: ((.name|nrm) as $x | $instn|index($x))!=null })'
+              installed: (((.name|nrm) as $x | $instn|index($x))!=null) })'
 
-SK=$(jq -s --argjson qt "$QTOKENS" --argjson inst "$INSTALLED_JSON" \
-      "$enrich | sort_by(-.installs)" "$TMP/skillssh.ndjson" 2>/dev/null); [ -z "$SK" ] && SK="[]"
-CL=$(jq -s --argjson qt "$QTOKENS" --argjson inst "$INSTALLED_JSON" \
-      "$enrich | sort_by(-.installs, -.stars)" "$TMP/clawhub.ndjson" 2>/dev/null); [ -z "$CL" ] && CL="[]"
-GH=$(jq -s --argjson qt "$QTOKENS" --argjson inst "$INSTALLED_JSON" \
-      "$enrich | sort_by(-.match, -.stars)" "$TMP/github.ndjson" 2>/dev/null); [ -z "$GH" ] && GH="[]"
+# Build one board's array. jq stderr is captured, NOT discarded: a failed
+# compile used to be indistinguishable from "this board has no results".
+enrich_board() { # $1=ndjson file  $2=sort expression  $3=label -> JSON array on stdout
+  local f="$1" sortexpr="$2" label="$3" err out rows
+  err="$TMP/jq-$label.err"
+  out=$(jq -s --argjson qt "$QTOKENS" --argjson inst "$INSTALLED_JSON" \
+          "$enrich | $sortexpr" "$f" 2>"$err")
+  if [ -s "$err" ]; then
+    printf '\n\xe2\x9a\xa0  jq failed while building the %s board - its results may be incomplete:\n' "$label" >&2
+    while IFS= read -r l; do printf '   %s\n' "$l" >&2; done < "$err"
+    printf '\n' >&2
+  fi
+  rows=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
+  if [ -z "$out" ]; then
+    if [ "${rows:-0}" -gt 0 ]; then
+      printf '\xe2\x9a\xa0  the %s board returned %s rows but none could be parsed\n' "$label" "$rows" >&2
+    fi
+    out="[]"
+  fi
+  printf '%s' "$out"
+}
+
+SK=$(enrich_board "$TMP/skillssh.ndjson" "sort_by(-.installs)" "skills.sh")
+CL=$(enrich_board "$TMP/clawhub.ndjson"   "sort_by(-.installs, -.stars)" "clawhub")
+GH=$(enrich_board "$TMP/github.ndjson"    "sort_by(-.match, -.stars)" "github")
 
 # cross-board note (heuristic): match on the normalized name (lowercased,
 # non-alphanumerics stripped) so "face-swap" ↔ "faceswap" line up, in BOTH
@@ -152,8 +171,8 @@ GH=$(jq -s --argjson qt "$QTOKENS" --argjson inst "$INSTALLED_JSON" \
 # can be missed.
 CL_NORMS=$(jq -c '[.[].name | ascii_downcase | gsub("[^a-z0-9]+";"")]' <<<"$CL")
 SK_NORMS=$(jq -c '[.[].name | ascii_downcase | gsub("[^a-z0-9]+";"")]' <<<"$SK")
-SK=$(jq -c --argjson o "$CL_NORMS" 'map(. + {also_other: ((.name|ascii_downcase|gsub("[^a-z0-9]+";"")) as $n | $o|index($n))!=null})' <<<"$SK")
-CL=$(jq -c --argjson o "$SK_NORMS" 'map(. + {also_other: ((.name|ascii_downcase|gsub("[^a-z0-9]+";"")) as $n | $o|index($n))!=null})' <<<"$CL")
+SK=$(jq -c --argjson o "$CL_NORMS" 'map(. + {also_other: ((((.name|ascii_downcase|gsub("[^a-z0-9]+";"")) as $n | $o|index($n)))!=null)})' <<<"$SK")
+CL=$(jq -c --argjson o "$SK_NORMS" 'map(. + {also_other: ((((.name|ascii_downcase|gsub("[^a-z0-9]+";"")) as $n | $o|index($n)))!=null)})' <<<"$CL")
 
 # ---- security scan: top installable candidates on each registry ----------
 scan_body() { local f="$1" flags="" level="clean"

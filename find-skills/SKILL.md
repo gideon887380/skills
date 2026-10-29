@@ -65,7 +65,7 @@ Flags:
 - `--json` — emit machine-readable JSON instead of the formatted report
 - `-h` / `--help` — print usage and exit
 
-The script needs `curl` and `jq`. It uses `gh` for the GitHub section and for fetching skills.sh skill bodies, and `unzip` for clawhub skill bodies during the scan — all optional and degraded gracefully if absent. No API keys are required.
+The script needs `curl` and `jq`. It uses `gh` for fetching skills.sh skill bodies and `unzip` for clawhub skill bodies during the scan — both optional and degraded gracefully if absent. The GitHub section uses `gh search repos` when the CLI is installed and falls back to the public REST search API (`api.github.com/search/repositories`; 10 requests/minute unauthenticated, `GITHUB_TOKEN`/`GH_TOKEN` raise the limit) when it is not, so that board is not lost on machines without the CLI. No API keys are required.
 
 ### Run adjacent-term queries — one search is not enough
 

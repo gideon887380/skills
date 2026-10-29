@@ -104,18 +104,35 @@ fetch_clawhub() {
 
 fetch_github() {
   local t0 t1 kw; t0=$(now_ms)
-  command -v gh >/dev/null 2>&1 || { record_health github skipped 0 0; return 0; }
   kw="${QUERY%% *}"   # the claude-skills topic is small; multi-word AND empties it
   # Union across the common skill topics. Each --topic call is its own AND query
   # (GitHub has no OR), so query each in PARALLEL to temp files, then merge+dedupe.
   mkdir -p "$TMP/gh"
-  for topic in claude-skills agent-skills claude-code-skills; do
-    gh search repos "$kw" --topic "$topic" --limit "$LIMIT" \
-       --json fullName,stargazersCount,description,url 2>/dev/null \
-    | jq -c '.[] | { board:"github", name:.fullName, summary:(.description//null),
-          stars:(.stargazersCount//0), url:.url, repo:.fullName }' 2>/dev/null \
-    > "$TMP/gh/$topic.ndjson" &
-  done
+  if command -v gh >/dev/null 2>&1; then
+    for topic in claude-skills agent-skills claude-code-skills; do
+      gh search repos "$kw" --topic "$topic" --limit "$LIMIT" \
+         --json fullName,stargazersCount,description,url 2>/dev/null \
+      | jq -c '.[] | { board:"github", name:.fullName, summary:(.description//null),
+            stars:(.stargazersCount//0), url:.url, repo:.fullName }' 2>/dev/null \
+      > "$TMP/gh/$topic.ndjson" &
+    done
+  else
+    # No gh CLI installed: query the public REST search API instead, so the
+    # GitHub board is not lost entirely on machines without it. Unauthenticated
+    # search allows 10 requests/minute, enough for the three topic queries;
+    # GITHUB_TOKEN / GH_TOKEN raise the limit when set.
+    local auth=()
+    [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    [ -z "${GITHUB_TOKEN:-}" ] && [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+    local enc; enc=$(printf %s "$kw" | jq -sRr @uri)
+    for topic in claude-skills agent-skills claude-code-skills; do
+      curl -s --max-time 25 -H "Accept: application/vnd.github+json" ${auth[@]+"${auth[@]}"} \
+        "https://api.github.com/search/repositories?q=${enc}+topic:${topic}&per_page=${LIMIT}" 2>/dev/null \
+      | jq -c '.items[] | { board:"github", name:.full_name, summary:(.description//null),
+            stars:(.stargazers_count//0), url:.html_url, repo:.full_name }' 2>/dev/null \
+      > "$TMP/gh/$topic.ndjson" &
+    done
+  fi
   wait
   cat "$TMP/gh"/*.ndjson 2>/dev/null | jq -s -c 'unique_by(.name) | .[]' 2>/dev/null > "$TMP/github.ndjson"
   t1=$(now_ms); record_health github ok $((t1-t0)) "$(wc -l < "$TMP/github.ndjson" 2>/dev/null | tr -d ' ')"
